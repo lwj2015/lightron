@@ -42,6 +42,9 @@ class SparseMoE(nn.Module):
         logits = self.gate(x_flat)  # [B*S, num_experts]
         probs = F.softmax(logits, dim=-1)
 
+        density = probs.mean(dim=0)
+        self.aux_loss = (density ** 2).sum() * self.num_experts
+
         # 2. 选择 Top-K 专家
         topk_probs, topk_indices = torch.topk(probs, self.top_k, dim=-1)
 
