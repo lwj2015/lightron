@@ -57,6 +57,8 @@ def main():
             optimizer.zero_grad()
             logits = model(x)
             loss = torch.nn.functional.cross_entropy(logits.view(-1, args.vocab_size), y.view(-1))
+            if hasattr(model, 'aux_loss'):
+                loss += 0.01 * model.aux_loss
             loss.backward()
 
             # 梯度裁剪 (FSDP 需要调用 clip_grad_norm_)
