@@ -11,9 +11,14 @@ from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
     size_based_auto_wrap_policy,
 )
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    checkpoint_wrapper,
+    CheckpointImpl,
+    apply_activation_checkpointing,
+)
 
 
-def get_fsdp_wrapper(model, transformer_layer_cls, use_bf16=True, strategy="full"):
+def get_fsdp_wrapper(model, transformer_layer_cls, use_bf16=True, strategy="full", use_activation_checkpointing=False):
     """
     配置并返回 FSDP 包装后的模型
     """
@@ -52,6 +57,16 @@ def get_fsdp_wrapper(model, transformer_layer_cls, use_bf16=True, strategy="full
         device_id=torch.cuda.current_device(),
         limit_all_gathers=True,  # 限制同时进行的 all-gather 数量，防止 OOM
     )
+
+    # 5. 检查点优化
+    if use_activation_checkpointing:
+        # 定义检查点策略：把每个 TransformerBlock 包起来
+        check_fn = lambda submodule: isinstance(submodule, transformer_layer_cls)
+        apply_activation_checkpointing(
+            fsdp_model,
+            checkpoint_wrapper_fn=checkpoint_wrapper,
+            check_fn=check_fn
+        )
     return fsdp_model
 
 
