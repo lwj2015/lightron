@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+title: 'Lightron: A Modern Minimalist Distributed Training Framework'
+message: >-
+  If you use Lightron, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Wenjun
+    family-names: Liu
+repository-code: 'https://github.com/lwj2015/lightron'
+abstract: "Lightron is a modern minimalist distributed training framework for educational purpose."
+keywords:
+  - LLM training framework
+  - distributed training
+license: MIT
+version: 1.0.1
