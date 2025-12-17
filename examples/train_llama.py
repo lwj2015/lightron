@@ -30,6 +30,10 @@ def main():
 
     # 3. 实例化模型并应用 FSDP
     model = LightronTransformer(args).to(local_rank)
+
+    # use compile to fuse operator
+    model = torch.compile(model)
+
     model = get_fsdp_wrapper(model, TransformerBlock, use_bf16=True)
 
     if rank == 0:
