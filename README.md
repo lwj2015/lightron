@@ -26,7 +26,7 @@ torchrun --nproc_per_node=4 examples/train_llama.py
 
  If you use Lightron in your research or learning journey, please cite it as follows:
 ```bash
-  @misc{lightron2024,
+  @misc{lightron2025,
   author = {Wenjun Liu},
   title = {Lightron: A Modern Minimalist Distributed Training Framework},
   year = {2025},
