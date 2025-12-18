@@ -29,10 +29,10 @@ def train():
     local_rank = int(os.environ["LOCAL_RANK"])
 
     # 1. 创建模型
-    args = ModelArgs(dim=1024, n_layers=8, n_heads=8)  # 小型配置用于测试
+    args = ModelArgs(dim=1024, n_layers=8, n_heads=8)
     model = LightronTransformer(args).to(local_rank)
 
-    # 2. FSDP 核心配置 (Key Optimization!)
+    # 2. FSDP 核心配置
     # 自动包裹策略：告诉 FSDP 每一层 TransformerBlock 是一个独立的切分单元
     my_auto_wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
@@ -58,7 +58,6 @@ def train():
     optimizer = optim.AdamW(model.parameters(), lr=3e-4)
 
     # 4. 简易训练循环
-    # 假设 data_loader 已经准备好
     for step in range(100):
         inputs = torch.randint(0, 32000, (4, 128)).to(local_rank)  # Dummy data
 
