@@ -1,6 +1,7 @@
 import os
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
@@ -9,7 +10,7 @@ from torch.distributed.fsdp import (
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
 )
-from .model import LightronTransformer, TransformerBlock
+from core.model.model import LightronTransformer, TransformerBlock
 from core.config.config import ModelArgs
 
 
