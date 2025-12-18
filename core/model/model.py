@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from core.config.config import ModelArgs
 from core.layers.layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
+from core.parallel.parallel_tp import ColumnParallelLinear, RowParallelLinear
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -31,6 +32,24 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
+def get_linear_cls(args: ModelArgs, parallel_type: str = None):
+    """
+    根据配置返回合适的 Linear 类
+    parallel_type: 'col' (列并行), 'row' (行并行), None (普通)
+    """
+    if args.use_lora:
+        # LoRA 模式下暂时不支持 TP (为了简化逻辑)
+        return lambda in_f, out_f, bias=False: LoRALinear(
+            in_f, out_f, rank=args.lora_rank, alpha=args.lora_alpha, dropout=args.lora_dropout, bias=bias
+        )
+    if args.parallel_mode == 'manual_tp':
+        if parallel_type == 'col':
+            return ColumnParallelLinear
+        elif parallel_type == 'row':
+            return RowParallelLinear
+    return nn.Linear
+
+
 class FeedForward(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -40,9 +59,12 @@ class FeedForward(nn.Module):
             hidden_dim = int(args.ffn_dim_multiplier * hidden_dim)
         hidden_dim = args.multiple_of * ((hidden_dim + args.multiple_of - 1) // args.multiple_of)
 
-        self.w1 = nn.Linear(args.dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, args.dim, bias=False)
-        self.w3 = nn.Linear(args.dim, hidden_dim, bias=False)
+        ColLinear = get_linear_cls(args, 'col')
+        RowLinear = get_linear_cls(args, 'row')
+
+        self.w1 = ColLinear(args.dim, hidden_dim, bias=False)
+        self.w2 = ColLinear(hidden_dim, args.dim, bias=False)
+        self.w3 = RowLinear(args.dim, hidden_dim, bias=False)
 
     def forward(self, x):
         # SwiGLU: (xW1 * SiLU(xW3)) * W2
@@ -60,10 +82,13 @@ class Attention(nn.Module):
         # 计算复制倍数，例如 32 / 8 = 4
         self.n_rep = self.n_heads // self.n_kv_heads
 
-        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
+        ColLinear = get_linear_cls(args, 'col')
+        RowLinear = get_linear_cls(args, 'row')
+
+        self.wq = ColLinear(args.dim, args.n_heads * self.head_dim, bias=False)
+        self.wk = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wo = RowLinear(args.n_heads * self.head_dim, args.dim, bias=False)
 
     def forward(self, x, freqs_cis):
         B, S, _ = x.shape
