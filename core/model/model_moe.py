@@ -58,8 +58,7 @@ class SparseMoE(nn.Module):
             expert_idx = topk_indices[:, k]  # [B*S]
             prob = topk_probs[:, k].unsqueeze(-1)  # [B*S, 1]
 
-            # 这一步效率较低，仅作演示原理。
-            # 实际中会将相同 expert 的 token 聚合在一起计算
+            # 这一步效率较低，仅作演示原理，实际会将相同 expert 的 token 聚合在一起计算
             for i in range(self.num_experts):
                 mask = (expert_idx == i)
                 if mask.any():
@@ -69,7 +68,3 @@ class SparseMoE(nn.Module):
                     final_output[mask] += prob[mask] * expert_output
 
         return final_output.view(B, S, D)
-
-# 注意：要在 model.py 中使用这个，需要在 ModelArgs 里加 use_moe 标志，
-# 并在 TransformerBlock 初始化时判断：
-# self.feed_forward = SparseMoE(args) if args.use_moe else FeedForward(args)
