@@ -14,9 +14,9 @@ def setup_distributed(
         dp_size: int = -1  # -1 means auto-calculated
 ):
     """
-    初始化分布式环境并构建多维 Device Mesh。
-    支持的维度顺序: (PP, DP, TP) 或更复杂。
-    这里采用通用的 2D/3D/4D Mesh 构建逻辑。
+    初始化分布式环境并构建多维 Device Mesh
+    支持的维度顺序: (PP, DP, TP) 或更多
+    这里采用通用的 2D/3D/4D Mesh 构建逻辑
     """
     if not dist.is_initialized():
         dist.init_process_group("nccl")
@@ -50,8 +50,6 @@ def setup_distributed(
     # DP 通常包含 FSDP/DDP/EP/CP 的混合语义，这里简化为 "dp"
     # 如果要支持 CP/EP，通常是在 DP 维度上再切分，或者独立维度
     # 这里为了通用性，我们将剩余维度统称为 "dp_replicate" (用于 FSDP/DDP)
-    # 实际生产中，CP 和 EP 往往是 DP 的一种变体
-
     if dp_size > 1:
         mesh_dims.append(dp_size)
         mesh_names.append("dp")
