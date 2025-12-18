@@ -5,102 +5,62 @@ from torch.distributed.fsdp import (
     MixedPrecision,
     ShardingStrategy,
     StateDictType,
-    FullStateDictConfig,
 )
-from torch.distributed.fsdp.wrap import (
-    transformer_auto_wrap_policy,
-    size_based_auto_wrap_policy,
-)
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    checkpoint_wrapper,
-    CheckpointImpl,
-    apply_activation_checkpointing,
-)
-from torch.distributed._composable.fsdp import fully_shard
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+# FSDP2
+from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
+from .distributed import get_device_mesh
 
 
-def get_fsdp_wrapper(model, transformer_layer_cls, use_bf16=True, strategy="full", use_activation_checkpointing=False):
+def apply_fsdp1(model, transformer_layer_cls, use_bf16=True, strategy="full", device_mesh=None):
     """
-    配置并返回 FSDP 包装后的模型
+    Classic FSDP (Wrapper based)
     """
-    # 1. 自动包裹策略：按层切分
     auto_wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
         transformer_layer_cls={transformer_layer_cls},
     )
 
-    # 2. 混合精度策略
-    if use_bf16 and torch.cuda.is_bf16_supported():
-        mp_policy = MixedPrecision(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,  # 梯度累加保持 FP32 以稳定训练
-            buffer_dtype=torch.float32,
-        )
-    else:
-        mp_policy = None  # 默认 FP32
+    mp_policy = MixedPrecision(
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.float32,
+        buffer_dtype=torch.float32,
+    ) if use_bf16 else None
 
-    # 3. 切分策略
-    if strategy == "full":
-        sharding_strategy = ShardingStrategy.FULL_SHARD  # ZeRO-3
+    # HSDP Logic: 如果提供了 device_mesh 且是 2D 的 (Replicate, Shard)
+    # FSDP1 的 HSDP 需要 process_group，这里简化处理
+    sharding_strategy = ShardingStrategy.FULL_SHARD
+    if strategy == "hybrid":
+        sharding_strategy = ShardingStrategy.HYBRID_SHARD
     elif strategy == "grad_op":
-        sharding_strategy = ShardingStrategy.SHARD_GRAD_OP  # ZeRO-2
-    elif strategy == "hybrid":
-        sharding_strategy = ShardingStrategy.HYBRID_SHARD  # HSDP
-    else:
-        sharding_strategy = ShardingStrategy.FULL_SHARD
+        sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
 
-    # 4. 包装模型
-    fsdp_model = FSDP(
+    return FSDP(
         model,
         auto_wrap_policy=auto_wrap_policy,
         mixed_precision=mp_policy,
         sharding_strategy=sharding_strategy,
         device_id=torch.cuda.current_device(),
-        limit_all_gathers=True,  # 限制同时进行的 all-gather 数量，防止 OOM
+        device_mesh=device_mesh  # PyTorch 2.2+ 支持直接传 DeviceMesh
     )
 
-    # 5. 检查点优化
-    if use_activation_checkpointing:
-        # 定义检查点策略：把每个 TransformerBlock 包起来
-        check_fn = lambda submodule: isinstance(submodule, transformer_layer_cls)
-        apply_activation_checkpointing(
-            fsdp_model,
-            checkpoint_wrapper_fn=checkpoint_wrapper,
-            check_fn=check_fn
-        )
-    return fsdp_model
 
-
-def save_fsdp_checkpoint(fsdp_model, rank, path):
+def apply_fsdp2(model, transformer_layer_cls=None):
     """
-    FSDP 模型保存逻辑：将所有分片聚合为完整权重保存
-    注意：这非常消耗内存，建议只在 rank 0 上做，或者使用 CPU offload
+    FSDP2 (Composable / DTensor based)
     """
-    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(fsdp_model, StateDictType.FULL_STATE_DICT, save_policy):
-        cpu_state = fsdp_model.state_dict()
+    mesh = get_device_mesh()
+    if mesh is None:
+        raise ValueError("Device Mesh must be initialized for FSDP2")
 
-    if rank == 0:
-        torch.save(cpu_state, path)
-        print(f"Model checkpoint saved to {path}")
+    mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 
+    # FSDP2 推荐做法：手动对每一层应用 fully_shard
+    # 这样可以精确控制切分粒度
+    for module in model.modules():
+        if transformer_layer_cls and isinstance(module, transformer_layer_cls):
+            fully_shard(module, mesh=mesh, policy=mp_policy)
 
-def load_fsdp_checkpoint(fsdp_model, path):
-    """
-    FSDP 模型加载逻辑
-    """
-    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        state_dict = torch.load(path)
-    else:
-        state_dict = None
-
-    # FSDP 会自动处理 scatter，将完整的 state_dict 切分给各个 rank
-    # 注意：这需要所有 rank 都运行
-    with FSDP.state_dict_type(fsdp_model, StateDictType.FULL_STATE_DICT):
-        fsdp_model.load_state_dict(state_dict)
-
-def apply_fsdp2(model):
-    for layer in model.layers:
-        fully_shard(layer)
-    fully_shard(model)
+    # 最后对整个模型应用，处理剩余参数（如 Embedding, Output Head）
+    fully_shard(model, mesh=mesh, policy=mp_policy)
     return model
