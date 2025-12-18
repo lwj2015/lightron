@@ -16,6 +16,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
 )
+from torch.distributed._composable.fsdp import fully_shard
 
 
 def get_fsdp_wrapper(model, transformer_layer_cls, use_bf16=True, strategy="full", use_activation_checkpointing=False):
@@ -97,3 +98,9 @@ def load_fsdp_checkpoint(fsdp_model, path):
     # 注意：这需要所有 rank 都运行
     with FSDP.state_dict_type(fsdp_model, StateDictType.FULL_STATE_DICT):
         fsdp_model.load_state_dict(state_dict)
+
+def apply_fsdp2(model):
+    for layer in model.layers:
+        fully_shard(layer)
+    fully_shard(model)
+    return model
