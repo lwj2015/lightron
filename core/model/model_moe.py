@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .config import ModelArgs
+from core.config.config import ModelArgs
 
 
 class Expert(nn.Module):

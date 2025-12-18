@@ -4,14 +4,13 @@ import torch.optim as optim
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
-    BackwardPrefetch,
     ShardingStrategy,
 )
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
 )
 from .model import LightronTransformer, TransformerBlock
-from .config import ModelArgs
+from core.config.config import ModelArgs
 
 
 def setup():

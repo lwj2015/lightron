@@ -1,7 +1,7 @@
 import unittest
 import torch
-from lightron.config import ModelArgs
-from lightron.model import LightronTransformer
+from core.config.config import ModelArgs
+from core.model import LightronTransformer
 
 
 class TestLightronModel(unittest.TestCase):

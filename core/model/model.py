@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .config import ModelArgs
-from .layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
+from core.config.config import ModelArgs
+from core.layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
