@@ -16,10 +16,20 @@ cd lightron
 pip install -r requirements.txt
 ```
 
-## Quick Start
+# Quick Start
 ```bash
 # Run on 4 GPUs with FSDP
 torchrun --nproc_per_node=4 examples/train_llama.py
+```
+
+## Test All Reduce Communication on local device
+```bash
+torchrun --nproc_per_node=8 --master_port=12555 parallel/communication/all_reduce.py
+```
+
+## Test Ring Attention on local device
+```bash
+python parallel/communication/ring_attention.py 
 ```
 
 # Citation
