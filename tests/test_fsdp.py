@@ -2,9 +2,9 @@ import os
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from core.config.config import ModelArgs
-from core.model import LightronTransformer, TransformerBlock
-from core.parallel import get_fsdp_wrapper
+from config import ModelArgs
+from model import LightronTransformer, TransformerBlock
+from parallel import get_fsdp_wrapper
 
 
 def run_fsdp_test(rank, world_size):

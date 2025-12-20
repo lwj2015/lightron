@@ -10,8 +10,8 @@ from torch.distributed.fsdp import (
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
 )
-from core.model.model import LightronTransformer, TransformerBlock
-from core.config.config import ModelArgs
+from model.model import LightronTransformer, TransformerBlock
+from config.config import ModelArgs
 
 
 def setup():

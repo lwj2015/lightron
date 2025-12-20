@@ -1,7 +1,7 @@
 import torch
 import os
-from core.model.model import LightronTransformer
-from core.config.config import ModelArgs
+from model.model import LightronTransformer
+from config.config import ModelArgs
 
 
 def load_hf_llama_weights(model: LightronTransformer, hf_model_path: str):

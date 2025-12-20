@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from core.config.config import ModelArgs
-from core.layers.layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
-from core.layers.lora_linear import LoRALinear
-from core.parallel.parallel_tp import ColumnParallelLinear, RowParallelLinear
+from config.config import ModelArgs
+from layers.layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
+from layers.lora_linear import LoRALinear
+from parallel.parallel_tp import ColumnParallelLinear, RowParallelLinear
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:

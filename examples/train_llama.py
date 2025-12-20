@@ -2,10 +2,10 @@ import os
 import time
 import torch
 import torch.optim as optim
-from core.config.config import ModelArgs
-from core.model import LightronTransformer, TransformerBlock
-from core.parallel import get_fsdp_wrapper, save_fsdp_checkpoint
-from core.data import create_dataloader
+from config import ModelArgs
+from model import LightronTransformer, TransformerBlock
+from parallel import get_fsdp_wrapper, save_fsdp_checkpoint
+from data import create_dataloader
 
 
 def main():
