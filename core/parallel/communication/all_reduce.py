@@ -180,6 +180,8 @@ def main():
     if rank in [0, 4]:  # 打印 Rank 0 和 4 (它们应该在同一个 DP 组)
         print(f"[DP Test] Rank {rank} (DP-Group Rank {dist.get_rank(dp_group)}): "
               f"Error = {err_dp.item():.5e}")
+    
+    print(f"\n\n _flatten_mesh_list: {mesh_3d._flatten_mesh_list}")
 
     dist.barrier()
 
