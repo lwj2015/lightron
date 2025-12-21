@@ -2,6 +2,7 @@ import os
 import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
+from parallel.communication.ring_p2p import ring_p2p
 
 
 def init_dist():
@@ -20,22 +21,6 @@ def init_dist():
 
 def get_global_rank(group, group_rank):
     return dist.get_global_rank(group, group_rank)
-
-
-def ring_p2p(send_tensor, recv_tensor, src_group_rank, dst_group_rank, group):
-    my_group_rank = dist.get_rank(group)
-    src_global_rank = get_global_rank(group, src_group_rank)
-    dst_global_rank = get_global_rank(group, dst_group_rank)
-
-    ops = []
-    if my_group_rank == src_group_rank:
-        ops.append(dist.P2POp(dist.isend, send_tensor, dst_global_rank, group=group))
-    if my_group_rank == dst_group_rank:
-        ops.append(dist.P2POp(dist.irecv, recv_tensor, src_global_rank, group=group))
-
-    if ops:
-        reqs = dist.batch_isend_irecv(ops)
-        for req in reqs: req.wait()
 
 
 def main():
