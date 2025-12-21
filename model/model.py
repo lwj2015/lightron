@@ -207,7 +207,7 @@ class LightronTransformer(nn.Module):
         self.args = args
 
         # TP Embedding
-        if args.parallel_mode == 'manual_tp':
+        if args.tp_size > 1:
             self.tok_embeddings = VocabParallelEmbedding(args.vocab_size, args.dim)
             # Output 层通常也是 Column Parallel (Gather Output)
             self.output = ColumnParallelLinear(args.dim, args.vocab_size, bias=False, gather_output=True)
