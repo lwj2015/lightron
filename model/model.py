@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from config.config import ModelArgs
 from layers.layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
-from layers.lora_linear import LoRALinear
 from parallel.parallel_tp import ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding
 
 
@@ -38,11 +37,6 @@ def get_linear_cls(args: ModelArgs, parallel_type: str = None):
     根据配置返回合适的 Linear 类
     parallel_type: 'col' (列并行), 'row' (行并行), None (普通)
     """
-    if args.use_lora:
-        # LoRA 模式下暂时不支持 TP (为了简化逻辑)
-        return lambda in_f, out_f, bias=False: LoRALinear(
-            in_f, out_f, rank=args.lora_rank, alpha=args.lora_alpha, dropout=args.lora_dropout, bias=bias
-        )
     if args.parallel_mode == 'manual_tp':
         if parallel_type == 'col':
             return ColumnParallelLinear
