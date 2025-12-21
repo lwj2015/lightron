@@ -19,7 +19,7 @@ pip install -r requirements.txt
 # Quick Start
 ```bash
 # Run on 4 GPUs with FSDP
-torchrun --nproc_per_node=4 examples/train_llama.py
+torchrun --nproc_per_node=8 examples/train_llama.py
 ```
 
 ## Test All Reduce Communication on local device
