@@ -151,7 +151,7 @@ class Attention(nn.Module):
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
         # 打印 Linear 输出后的形状
-        print(f"[Debug] Linear Out - xq: {xq.shape}, xk: {xk.shape}") 
+        # print(f"[Debug] Linear Out - xq: {xq.shape}, xk: {xk.shape}")
 
         # 2. Reshape
         # xq = xq.view(B, S, -1, self.head_dim)
@@ -163,14 +163,14 @@ class Attention(nn.Module):
         xv = xv.view(B, S, self.n_heads, -1)
 
         # === 添加调试日志 ===
-        import torch.distributed as dist
-        if dist.get_rank() == 0: # 只让 Rank 0 打印，避免刷屏
-            print(f"\n[Debug Rank 0] Attention Forward:")
-            print(f"  Input x: {x.shape}")
-            print(f"  self.n_heads: {self.n_heads}, self.head_dim: {self.head_dim}")
-            print(f"  xq (reshaped): {xq.shape}")
-            print(f"  xk (reshaped): {xk.shape}")
-            print(f"  freqs_cis (input): {freqs_cis.shape}")
+        # import torch.distributed as dist
+        # if dist.get_rank() == 0: # 只让 Rank 0 打印，避免刷屏
+        #     print(f"\n[Debug Rank 0] Attention Forward:")
+        #     print(f"  Input x: {x.shape}")
+        #     print(f"  self.n_heads: {self.n_heads}, self.head_dim: {self.head_dim}")
+        #     print(f"  xq (reshaped): {xq.shape}")
+        #     print(f"  xk (reshaped): {xk.shape}")
+        #     print(f"  freqs_cis (input): {freqs_cis.shape}")
         # ===================
 
         # 3. Apply RoPE (旋转位置编码)

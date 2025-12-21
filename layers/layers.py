@@ -47,12 +47,12 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
 
     # === 添加调试日志 ===
-    import torch.distributed as dist
-    if dist.is_initialized() and dist.get_rank() == 0:
-        print(f"[Debug Rank 0] Inside apply_rotary_emb:")
-        print(f"  xq_ (complex): {xq_.shape}")
-        print(f"  xk_ (complex): {xk_.shape}")
-        print(f"  freqs_cis (raw): {freqs_cis.shape}")
+    # import torch.distributed as dist
+    # if dist.is_initialized() and dist.get_rank() == 0:
+    #     print(f"[Debug Rank 0] Inside apply_rotary_emb:")
+    #     print(f"  xq_ (complex): {xq_.shape}")
+    #     print(f"  xk_ (complex): {xk_.shape}")
+    #     print(f"  freqs_cis (raw): {freqs_cis.shape}")
     # ===================
 
     # freqs_cis = freqs_cis[:xq.shape[1]] # 切片匹配 seq_len
@@ -61,8 +61,8 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     # freqs_cis 需要 reshape 成 [1, S, 1, head_dim/2] 才能跟 xq_ [B, S, n_heads, head_dim/2] 相乘
     # 这里的 reshape 逻辑是关键
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    if dist.is_initialized() and dist.get_rank() == 0:
-        print(f"  freqs_cis (broadcast): {freqs_cis.shape}")
+    # if dist.is_initialized() and dist.get_rank() == 0:
+    #     print(f"  freqs_cis (broadcast): {freqs_cis.shape}")
 
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
