@@ -257,7 +257,8 @@ class LightronTransformer(nn.Module):
         h = self.tok_embeddings(tokens)
 
         # 确保 freqs_cis 在同一设备
-        freqs_cis = self.freqs_cis[:S].to(h.device)
+        # freqs_cis = self.freqs_cis[:S].to(h.device)
+        freqs_cis = self.freqs_cis
 
         for layer in self.layers:
             h = layer(h, freqs_cis)

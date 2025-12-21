@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from .distributed import get_device_mesh
+from layers.layers import apply_rotary_emb
 
 
 def _all_to_all(input_, scatter_dim, gather_dim, group):
@@ -64,6 +65,16 @@ class ContextParallelAttention(nn.Module):
         super().__init__()
         self.local_attn = local_attn_module
         self.num_heads = args.n_heads
+
+        # 既然 local_attn 已经是 TP 后的模块，它的 n_heads 属性就是正确的本地头数 (6)
+        # 不要直接读 args.n_heads (12)！
+        if hasattr(local_attn_module, 'n_heads'):
+            self.num_heads = local_attn_module.n_heads
+        else:
+            # 兜底逻辑：手动除以 TP
+            tp_size = getattr(args, 'tp_size', 1)
+            self.num_heads = args.n_heads // tp_size
+
         self.head_dim = args.dim // args.n_heads
 
         # 获取 CP 通信组
@@ -71,6 +82,11 @@ class ContextParallelAttention(nn.Module):
         # 检查 mesh 中是否有 'cp' 维度，如果没有则回退到 None (不做 CP)
         if self.mesh and "cp" in self.mesh.mesh_dim_names:
             self.cp_group = self.mesh["cp"].get_group()
+            cp_size = dist.get_world_size(self.cp_group)
+            # === 修复：添加整除断言 ===
+            assert self.num_heads % cp_size == 0, \
+                f"Context Parallelism requires local_num_heads ({self.num_heads}) " \
+                f"to be divisible by cp_size ({cp_size})."
         else:
             self.cp_group = None
 
@@ -130,7 +146,7 @@ class ContextParallelAttention(nn.Module):
         # 因为现在 S 是完整的，所以可以直接应用 RoPE
         # 注意：freqs_cis 需要匹配 S_global
         # 如果传入的 freqs_cis 是切片过的，这里可能需要调整，假设传入的是完整的或自动广播的
-        xq, xk = self.local_attn.apply_rotary_emb_custom(xq, xk, freqs_cis)
+        xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
 
         # === 4. Local Attention (FlashAttn) ===
         # PyTorch 的 scaled_dot_product_attention 接受 [B, H, S, D]
