@@ -126,9 +126,9 @@ def apply_fsdp2(
         for module in model.modules():
             if isinstance(module, transformer_layer_cls):
                 fully_shard(
-                    module,
+                    module=module,
                     mesh=mesh,
-                    policy=mp_policy,
+                    mp_policy=mp_policy,
                     reshard_after_forward=True
                 )
 
@@ -142,7 +142,7 @@ def apply_fsdp2(
     fully_shard(
         model,
         mesh=mesh,
-        policy=mp_policy,
+        mp_policy=mp_policy,
         reshard_after_forward=True
     )
 
