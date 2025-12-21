@@ -167,6 +167,18 @@ def main():
         model = model.to_empty(device="cuda")
         model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
 
+    from layers.layers import precompute_freqs_cis
+    if global_rank == 0:
+        print("Re-computing RoPE frequencies for Meta-initialized model...")
+    with torch.no_grad():
+        # 重新计算
+        real_freqs = precompute_freqs_cis(
+            model_args.dim // model_args.n_heads,
+            model_args.max_seq_len
+        )
+        # 移动到 GPU 并赋值给模型的 buffer
+        model.freqs_cis.copy_(real_freqs.to("cuda"))
+
     if global_rank == 0:
         # 统计参数量 (FSDP 下可能不准，仅供参考)
         try:

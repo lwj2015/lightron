@@ -222,7 +222,9 @@ class LightronTransformer(nn.Module):
         self.norm = RMSNorm(args.dim, eps=args.norm_eps)
 
         # Precompute RoPE frequencies 注意：这里只计算一次，并在 forward 中根据当前 seq_len 切片
-        self.freqs_cis = precompute_freqs_cis(self.args.dim // self.args.n_heads, self.args.max_seq_len)
+        freqs_cis = precompute_freqs_cis(self.args.dim // self.args.n_heads, self.args.max_seq_len)
+        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
+        # self.freqs_cis = precompute_freqs_cis(self.args.dim // self.args.n_heads, self.args.max_seq_len)
 
     def forward(self, tokens):
         B, S = tokens.shape
