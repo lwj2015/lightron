@@ -124,7 +124,9 @@ class Attention(nn.Module):
 
         # 如果配置中没写 n_kv_heads，默认等于 n_heads (即退化为标准 MHA)
         self.n_heads = args.n_heads // self.tp_size
-        self.n_kv_heads = (args.n_kv_heads if args.n_kv_heads is not None else args.n_heads) // self.tp_size
+
+        global_n_kv_heads = args.n_kv_heads if args.n_kv_heads is not None else args.n_heads
+        self.n_kv_heads = global_n_kv_heads // self.tp_size
 
         self.head_dim = args.dim // args.n_heads
 
@@ -136,8 +138,10 @@ class Attention(nn.Module):
 
         # TP 模式下，这里的 dim 会被切分，所以传入 total dim 即可，Layer 内部会处理
         self.wq = ColLinear(args.dim, args.n_heads * self.head_dim, bias=False)
-        self.wk = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        # self.wk = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        # self.wv = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wk = ColLinear(args.dim, global_n_kv_heads * self.head_dim, bias=False)
+        self.wv = ColLinear(args.dim, global_n_kv_heads * self.head_dim, bias=False)
         self.wo = RowLinear(args.n_heads * self.head_dim, args.dim, bias=False)
 
     def forward(self, x, freqs_cis):
@@ -146,10 +150,28 @@ class Attention(nn.Module):
         # 1. 投影
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
+        # 打印 Linear 输出后的形状
+        print(f"[Debug] Linear Out - xq: {xq.shape}, xk: {xk.shape}") 
+
         # 2. Reshape
-        xq = xq.view(B, S, -1, self.head_dim)
-        xk = xk.view(B, S, -1, self.head_dim)
-        xv = xv.view(B, S, -1, self.head_dim)
+        # xq = xq.view(B, S, -1, self.head_dim)
+        # xk = xk.view(B, S, -1, self.head_dim)
+        # xv = xv.view(B, S, -1, self.head_dim)
+
+        xq = xq.view(B, S, self.n_heads, -1)
+        xk = xk.view(B, S, self.n_heads, -1)
+        xv = xv.view(B, S, self.n_heads, -1)
+
+        # === 添加调试日志 ===
+        import torch.distributed as dist
+        if dist.get_rank() == 0: # 只让 Rank 0 打印，避免刷屏
+            print(f"\n[Debug Rank 0] Attention Forward:")
+            print(f"  Input x: {x.shape}")
+            print(f"  self.n_heads: {self.n_heads}, self.head_dim: {self.head_dim}")
+            print(f"  xq (reshaped): {xq.shape}")
+            print(f"  xk (reshaped): {xk.shape}")
+            print(f"  freqs_cis (input): {freqs_cis.shape}")
+        # ===================
 
         # 3. Apply RoPE (旋转位置编码)
         # 注意：RoPE 是在 Attention 计算之前做的，且要在 repeat_kv 之前做
