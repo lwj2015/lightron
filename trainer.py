@@ -116,11 +116,10 @@ def main():
         vocab_size=vocab_size,
         max_seq_len=train_cfg["seq_length"],
         norm_eps=getattr(hf_config, "rms_norm_eps", 1e-5),
-        # 并行模式：如果 TP > 1，开启手动 TP
-        # parallel_mode='manual_tp' if tp_size > 1 else 'fsdp2',
+        # 并行模式
         tp_size=tp_size,
         cp_size=cp_size,
-        # MoE 配置 (从 config 读取，如果没有则默认为 1)
+        # MoE 配置
         moe_num_experts=model_cfg.get("moe_num_experts", 1),
         moe_topk=model_cfg.get("moe_topk", 2),
         moe_layer_freq=model_cfg.get("moe_layer_freq", 2)
