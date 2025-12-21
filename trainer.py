@@ -93,6 +93,16 @@ def main():
     # 让所有进程都加载 Config (Config 文件很小，不会有并发问题)
     hf_config = AutoConfig.from_pretrained(model_cfg["name"], trust_remote_code=True)
 
+    vocab_size = hf_config.vocab_size
+    if tp_size > 1:
+        # 计算需要填充多少才能被 tp_size 整除
+        if vocab_size % tp_size != 0:
+            new_vocab_size = ((vocab_size // tp_size) + 1) * tp_size
+            if global_rank == 0:
+                print(f"⚠️ Vocab size {vocab_size} is not divisible by TP={tp_size}.")
+                print(f"   Padding vocab size to {new_vocab_size}...")
+            vocab_size = new_vocab_size
+
     # 4. 转换为 Lightron ModelArgs
     # 自动映射 HF 参数到 Lightron 参数
     model_args = ModelArgs(
