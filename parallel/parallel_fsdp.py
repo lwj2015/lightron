@@ -1,21 +1,30 @@
 import functools
 import torch
-import torch.nn as nn
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
     ShardingStrategy,
-    StateDictType,
-    FullStateDictConfig,
 )
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
     size_based_auto_wrap_policy,
-    enable_wrap,
-    wrap,
 )
+
 # FSDP2
-from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
+try:
+    # PyTorch 2.3+ (最新路径)
+    from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
+except ImportError:
+    try:
+        # PyTorch 2.2.0 (旧路径)
+        from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+    except ImportError:
+        def fully_shard(*args, **kwargs):
+            raise NotImplementedError("FSDP2 (fully_shard) requires PyTorch >= 2.2")
+        class MixedPrecisionPolicy:
+            def __init__(self, *args, **kwargs):
+                pass
+
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper,
     CheckpointImpl,
