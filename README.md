@@ -18,8 +18,7 @@ pip install -r requirements.txt
 
 # Quick Start
 ```bash
-# Run on 4 GPUs with FSDP
-torchrun --nproc_per_node=8 trainer.py
+torchrun --nproc_per_node=8 --master_port=19501 trainer.py --config examples/config_tinystories.json
 ```
 
 ## Test All Reduce Communication on local device
