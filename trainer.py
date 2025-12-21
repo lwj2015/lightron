@@ -110,7 +110,7 @@ def main():
         n_layers=hf_config.num_hidden_layers,
         n_heads=hf_config.num_attention_heads,
         n_kv_heads=getattr(hf_config, "num_key_value_heads", hf_config.num_attention_heads),
-        vocab_size=hf_config.vocab_size,
+        vocab_size=vocab_size,
         max_seq_len=train_cfg["seq_length"],
         norm_eps=getattr(hf_config, "rms_norm_eps", 1e-5),
         # 并行模式：如果 TP > 1，开启手动 TP
