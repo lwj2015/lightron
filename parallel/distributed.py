@@ -72,10 +72,10 @@ def setup_distributed(
     global _DEVICE_MESH, _MESH_DIMS
 
     if len(mesh_dims) > 0:
-        _DEVICE_MESH = init_device_mesh("cuda", tuple(mesh_dims), mesh_names=tuple(mesh_names))
+        _DEVICE_MESH = init_device_mesh("cuda", tuple(mesh_dims), mesh_dim_names=tuple(mesh_names))
     else:
         # 单卡模式
-        _DEVICE_MESH = init_device_mesh("cuda", (1,), mesh_names=("dp",))
+        _DEVICE_MESH = init_device_mesh("cuda", (1,), mesh_dim_names=("dp",))
 
     # 4. 存储配置供后续查询
     _MESH_DIMS = {
