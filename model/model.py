@@ -122,6 +122,10 @@ class Attention(nn.Module):
 
         self.tp_size = args.tp_size if hasattr(args, 'tp_size') else 1
 
+        assert args.n_heads % self.tp_size == 0, \
+            f"Tensor Parallelism requires n_heads ({args.n_heads}) " \
+            f"to be divisible by tp_size ({self.tp_size})."
+
         # 如果配置中没写 n_kv_heads，默认等于 n_heads (即退化为标准 MHA)
         self.n_heads = args.n_heads // self.tp_size
 
