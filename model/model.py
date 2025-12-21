@@ -39,7 +39,7 @@ def get_linear_cls(args: ModelArgs, parallel_type: str = None):
     根据配置返回合适的 Linear 类
     parallel_type: 'col' (列并行), 'row' (行并行), None (普通)
     """
-    if args.parallel_mode == 'manual_tp':
+    if args.tp_size > 1:
         if parallel_type == 'col':
             return ColumnParallelLinear
         elif parallel_type == 'row':
@@ -178,8 +178,9 @@ class TransformerBlock(nn.Module):
 
         # 1. Attention (集成 CP)
         self.attention = Attention(args)
-        if args.parallel_mode == 'cp':
+        if args.cp_size > 1:
             # 如果开启 CP，包裹 Attention
+            # 这与 TP 是正交的：TP 切分权重，CP 切分 Sequence
             self.attention = ContextParallelAttention(self.attention, args)
 
         # 2. FeedForward (集成 MoE)

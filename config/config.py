@@ -16,16 +16,11 @@ class ModelArgs:
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-5
     max_seq_len: int = 2048
-    dropout: float = 0.0
 
-    # parallel_mode: 'fsdp1' (默认), 'fsdp2' (DTensor)
-    parallel_mode: str = 'fsdp1'
-    # (dp_size, tp_size), for manual_tp
+    # parallel_mode: str = 'fsdp1'
+    tp_size: int = 1
+    cp_size: int = 1
     device_mesh_shape: tuple = (1, 1)
-
-    lora_rank: int = 8
-    lora_alpha: int = 16
-    lora_dropout: float = 0.05
 
     def __post_init__(self):
         if self.n_kv_heads is None:

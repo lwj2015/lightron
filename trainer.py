@@ -64,12 +64,15 @@ def main():
     # 优先从环境变量读取 (torchrun)，如果没设则用 config 的默认值
     tp_size = int(os.environ.get("TP_SIZE", dist_cfg.get("tp_size", 1)))
     dp_size = int(os.environ.get("DP_SIZE", dist_cfg.get("dp_size", 1)))
+    cp_size = int(os.environ.get("CP_SIZE", dist_cfg.get("cp_size", 1)))
+    pp_size = int(os.environ.get("PP_SIZE", dist_cfg.get("pp_size", 1)))
+    ep_size = int(os.environ.get("EP_SIZE", dist_cfg.get("ep_size", 1)))
 
     setup_distributed(
         tp_size=tp_size,
-        pp_size=dist_cfg.get("pp_size", 1),
-        cp_size=dist_cfg.get("cp_size", 1),
-        ep_size=dist_cfg.get("ep_size", 1),
+        pp_size=pp_size,
+        cp_size=cp_size,
+        ep_size=ep_size,
         dp_size=dp_size
     )
 
@@ -114,7 +117,9 @@ def main():
         max_seq_len=train_cfg["seq_length"],
         norm_eps=getattr(hf_config, "rms_norm_eps", 1e-5),
         # 并行模式：如果 TP > 1，开启手动 TP
-        parallel_mode='manual_tp' if tp_size > 1 else 'fsdp2',
+        # parallel_mode='manual_tp' if tp_size > 1 else 'fsdp2',
+        tp_size=tp_size,
+        cp_size=cp_size,
         # MoE 配置 (从 config 读取，如果没有则默认为 1)
         moe_num_experts=model_cfg.get("moe_num_experts", 1),
         moe_topk=model_cfg.get("moe_topk", 2),
