@@ -9,6 +9,7 @@ class ModelArgs:
     n_heads: int = 32
     n_kv_heads: Optional[int] = None  # For GQA
     moe_num_experts: int = 0
+    moe_topk: int = 0
     vocab_size: int = 32000
     multiple_of: int = 256  # MLP hidden dim multiple
     ffn_dim_multiplier: Optional[float] = None
