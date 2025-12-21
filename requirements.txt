@@ -1,4 +1,6 @@
+wandb==0.23.1
 torch==2.3.0
-numpy
+triton==2.3.0
+numpy==1.26.4
+datasets==2.19.1
 transformers==4.47.0
-pytest
