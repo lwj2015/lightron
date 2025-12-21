@@ -6,9 +6,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.distributed.device_mesh import init_device_mesh
 
-# ==========================================
-# 1. 核心算法: Ring Attention Kernel
-# ==========================================
+
 def ring_attention_kernel(local_q, local_k, local_v, cp_group, tp_group):
     """
     实现 Ring Attention + Online Softmax
@@ -120,9 +118,7 @@ def ring_attention_kernel(local_q, local_k, local_v, cp_group, tp_group):
     final_out = local_out / local_sum_exp
     return final_out
 
-# ==========================================
-# 2. 模拟主流程 (Device Mesh + Data Sim)
-# ==========================================
+
 def run_demo(rank, world_size):
     # 初始化进程组
     os.environ['MASTER_ADDR'] = 'localhost'
