@@ -1,4 +1,4 @@
-torch>=2.1.0
+torch==2.1.0
 numpy
-transformers>=4.30.0  # 仅用于某些 tokenizer 或兼容性
+transformers>=4.30.0
 pytest

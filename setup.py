@@ -7,7 +7,7 @@ setup(
     author="Your Name",
     packages=find_packages(),
     install_requires=[
-        "torch>=2.1.0",
+        "torch==2.1.0",
         "numpy",
     ],
 )
