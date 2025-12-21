@@ -5,6 +5,8 @@ from torch.distributed.fsdp import (
     MixedPrecision,
     ShardingStrategy,
 )
+from parallel.distributed import get_pp_group
+import torch.distributed as dist
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
     size_based_auto_wrap_policy,
@@ -121,6 +123,14 @@ def apply_fsdp2(
     mesh = get_device_mesh()
     if mesh is None:
         raise ValueError("Device Mesh must be initialized for FSDP2")
+    
+    # FSDP2 只需要知道在哪个维度上进行 Sharding (DP)
+    # 如果 Mesh 是多维的 (例如 3D: pp/dp/tp)，我们需要切出 'dp' 这一维
+    fsdp_mesh = mesh
+    if "dp" in mesh.mesh_dim_names:
+        # 使用 mesh["dp"] 提取子网格
+        # 这会返回一个 1D Mesh，只包含 DP 组的进程
+        fsdp_mesh = mesh["dp"]
 
     mp_policy = MixedPrecisionPolicy(
         param_dtype=torch.bfloat16,
@@ -129,28 +139,43 @@ def apply_fsdp2(
 
     # FSDP2 的核心逻辑：自底向上应用 fully_shard
 
-    # 1. 对 Transformer Block 应用 fully_shard
-    # reshard_after_forward=True: 类似于 FSDP1 的 FULL_SHARD，算完就释放显存
-    if transformer_layer_cls:
-        for module in model.modules():
-            if isinstance(module, transformer_layer_cls):
-                fully_shard(
-                    module=module,
-                    mesh=mesh,
-                    mp_policy=mp_policy,
-                    reshard_after_forward=True
-                )
+    # # 1. 对 Transformer Block 应用 fully_shard
+    # # reshard_after_forward=True: 类似于 FSDP1 的 FULL_SHARD，算完就释放显存
+    # if transformer_layer_cls:
+    #     for module in model.modules():
+    #         if isinstance(module, transformer_layer_cls):
+    #             fully_shard(
+    #                 module=module,
+    #                 mesh=mesh,
+    #                 mp_policy=mp_policy,
+    #                 reshard_after_forward=True
+    #             )
 
-                # [改进点] FSDP2 的 AC 集成
-                # 在 fully_shard 之后应用 AC
-                if use_activation_checkpointing:
-                    checkpoint_wrapper(module, checkpoint_impl=CheckpointImpl.NO_REENTRANT)
+    #             # [改进点] FSDP2 的 AC 集成
+    #             # 在 fully_shard 之后应用 AC
+    #             if use_activation_checkpointing:
+    #                 checkpoint_wrapper(module, checkpoint_impl=CheckpointImpl.NO_REENTRANT)
 
-    # 2. 对整个模型应用 fully_shard
-    # 这会处理剩下的 Embedding、Output Head 等层
+    # # 2. 对整个模型应用 fully_shard
+    # # 这会处理剩下的 Embedding、Output Head 等层
+    # fully_shard(
+    #     model,
+    #     mesh=mesh,
+    #     mp_policy=mp_policy,
+    #     reshard_after_forward=True
+    # )
+    for layer_id, transformer_block in enumerate(model.layers):
+        # 使用提取出的 fsdp_mesh (1D) 而不是全局 mesh (3D)
+        fully_shard(
+            transformer_block, 
+            mesh=fsdp_mesh, 
+            mp_policy=mp_policy,
+            reshard_after_forward=True
+        )
+    # Root level wrapping
     fully_shard(
-        model,
-        mesh=mesh,
+        model, 
+        mesh=fsdp_mesh, 
         mp_policy=mp_policy,
         reshard_after_forward=True
     )
