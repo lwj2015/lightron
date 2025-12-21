@@ -1,9 +1,8 @@
 import os
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from torch.distributed.device_mesh import init_device_mesh
-
+from parallel.communication.all_reduce import ring_all_reduce
 
 def init_dist():
     """初始化分布式环境"""
@@ -21,76 +20,6 @@ def init_dist():
         dist.init_process_group(backend="nccl", device_id=device)
 
     return rank, world_size, device, local_rank
-
-
-def ring_all_reduce(tensor: torch.Tensor, group: dist.ProcessGroup = None) -> torch.Tensor:
-    """
-    通用的 Ring AllReduce 实现
-    :param tensor: 输入张量
-    :param group: 通信组 (TP组 或 DP组)
-    """
-    if group is None:
-        group = dist.group.WORLD
-
-    # 获取组内逻辑 Rank
-    rank_in_group = dist.get_rank(group)
-    world_size_in_group = dist.get_world_size(group)
-
-    if world_size_in_group == 1:
-        return tensor
-
-    # 预处理：Flatten + Padding
-    original_shape = tensor.shape
-    tensor_flat = tensor.flatten()
-    numel = tensor_flat.numel()
-
-    pad_len = (world_size_in_group - (numel % world_size_in_group)) % world_size_in_group
-    if pad_len > 0:
-        tensor_flat = F.pad(tensor_flat, (0, pad_len))
-
-    # 分块
-    chunk_size = tensor_flat.numel() // world_size_in_group
-    chunks = list(tensor_flat.split(chunk_size))
-
-    # 计算环形邻居 (逻辑 Rank -> 物理 Global Rank)
-    right_rank_logical = (rank_in_group + 1) % world_size_in_group
-    left_rank_logical = (rank_in_group - 1 + world_size_in_group) % world_size_in_group
-
-    right_rank_global = dist.get_global_rank(group, right_rank_logical)
-    left_rank_global = dist.get_global_rank(group, left_rank_logical)
-
-    # Reduce-Scatter
-    for step in range(world_size_in_group - 1):
-        send_idx = (rank_in_group - step + world_size_in_group) % world_size_in_group
-        recv_idx = (rank_in_group - step - 1 + world_size_in_group) % world_size_in_group
-
-        send_chunk = chunks[send_idx]
-        recv_buffer = torch.empty_like(chunks[recv_idx])
-
-        reqs = dist.batch_isend_irecv([
-            dist.P2POp(dist.isend, send_chunk, right_rank_global, group=group),
-            dist.P2POp(dist.irecv, recv_buffer, left_rank_global, group=group)
-        ])
-        for req in reqs: req.wait()
-        chunks[recv_idx].add_(recv_buffer)
-
-    # All-Gather
-    for step in range(world_size_in_group - 1):
-        send_idx = (rank_in_group - step + 1 + world_size_in_group) % world_size_in_group
-        recv_idx = (rank_in_group - step + world_size_in_group) % world_size_in_group
-
-        send_chunk = chunks[send_idx]
-        reqs = dist.batch_isend_irecv([
-            dist.P2POp(dist.isend, send_chunk, right_rank_global, group=group),
-            dist.P2POp(dist.irecv, chunks[recv_idx], left_rank_global, group=group)
-        ])
-        for req in reqs: req.wait()
-
-    # 恢复形状
-    res = torch.cat(chunks)
-    if pad_len > 0:
-        res = res[:-pad_len]
-    return res.reshape(original_shape)
 
 
 def main():
@@ -169,7 +98,7 @@ def main():
     if rank in [0, 4]:  # 打印 Rank 0 和 4 (它们应该在同一个 DP 组)
         print(f"[DP Test] Rank {rank} (DP-Group Rank {dist.get_rank(dp_group)}): "
               f"Error = {err_dp.item():.5e}")
-    
+
     print(f"\n\n _flatten_mesh_list: {mesh_3d._flatten_mesh_list}")
 
     dist.barrier()

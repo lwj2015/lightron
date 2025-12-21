@@ -2,9 +2,9 @@ import os
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from config import ModelArgs
-from model import LightronTransformer, TransformerBlock
-from parallel import get_fsdp_wrapper
+from config.config import ModelArgs
+from model.model import LightronTransformer, TransformerBlock
+from parallel.parallel_fsdp import apply_fsdp1, apply_fsdp2
 
 
 def run_fsdp_test(rank, world_size):
@@ -18,7 +18,7 @@ def run_fsdp_test(rank, world_size):
     model = LightronTransformer(args).cuda()
 
     # 包装 FSDP
-    fsdp_model = get_fsdp_wrapper(model, TransformerBlock, use_bf16=False)
+    fsdp_model = apply_fsdp1(model, TransformerBlock, use_bf16=False)
 
     # 运行一次 Forward/Backward
     x = torch.randint(0, 100, (2, 16)).cuda()
