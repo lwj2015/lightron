@@ -137,7 +137,31 @@ def main():
     if dp_size > 1:
         # FSDP2 会自动处理 Meta 到 Real 的参数初始化
         # 注意：如果 TP>1，这里是混合并行，FSDP2 会在 DP 维度切分
+
+        # 1. 先切分 (此时还是 Meta Tensor)
         model = apply_fsdp2(model)
+
+        # 2. 分配物理显存 (Materialize), 这会在每张卡上只分配它负责的那一部分参数 (Local Shard)
+        model = model.to_empty(device="cuda")
+
+        # 3. 初始化参数数值
+        # 因为是 Meta 初始化，现在显存里全是垃圾数据，必须 reset
+        # 为了保证所有 DP Rank 初始权重一致，我们需要固定随机种子
+        torch.manual_seed(42 + global_rank)  # 注意：通常 DP 需要相同种子，但 FSDP2 这种局部初始化比较特殊
+
+        # 更严谨的做法：设置相同的种子，让大家算出一样的随机数（如果切分逻辑允许）, 或者 Rank 0 初始化后广播（太慢）。
+        # 对于 FSDP2，最简单的做法是：设置全局统一种子，然后依靠 reset_parameters
+        torch.manual_seed(train_cfg.get("seed", 42))
+
+        def init_weights(m):
+            # 如果模块有自定义的重置方法（如 Linear, Embedding, 或我们的 ParallelLinear）
+            if hasattr(m, 'reset_parameters'):
+                m.reset_parameters()
+            # 兜底逻辑：针对原生 PyTorch 层
+            elif isinstance(m, (torch.nn.Linear, torch.nn.Embedding)):
+                m.reset_parameters()
+
+        model.apply(init_weights)
     else:
         # 纯 TP 模式或单卡模式，需要手动 materialize
         model = model.to_empty(device="cuda")
