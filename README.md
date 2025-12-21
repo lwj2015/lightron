@@ -18,6 +18,7 @@ pip install -r requirements.txt
 
 # Quick Start
 ```bash
+# run on local machine with 8 GPUs, tp_size=2, dp_size=4
 torchrun --nproc_per_node=8 trainer.py --config examples/config_tinystories.json
 ```
 
