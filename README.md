@@ -18,17 +18,23 @@ pip install -r requirements.txt
 
 # Quick Start
 ```bash
-torchrun --nproc_per_node=8 --master_port=19501 trainer.py --config examples/config_tinystories.json
+torchrun --nproc_per_node=8 trainer.py --config examples/config_tinystories.json
 ```
 
-## Test All Reduce Communication on local device
+# Local Test 
+Test All Reduce Communication
 ```bash
-torchrun --nproc_per_node=8 --master_port=12555 parallel/communication/all_reduce.py
+torchrun --nproc_per_node=8 tests/test_all_reduce.py
 ```
 
-## Test Ring Attention on local device
+Test Ring Attention
 ```bash
-python parallel/communication/ring_attention.py 
+python tests/test_ring_attention.py 
+```
+
+Test DataLoader
+```bash
+torchrun --nproc_per_node=8 tests/test_dataloader.py
 ```
 
 # Citation
