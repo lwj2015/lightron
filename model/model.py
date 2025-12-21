@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from config.config import ModelArgs
 from layers.layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
 from layers.lora_linear import LoRALinear
-from parallel.parallel_tp import ColumnParallelLinear, RowParallelLinear
+from parallel.parallel_tp import ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -63,9 +63,10 @@ class FeedForward(nn.Module):
         ColLinear = get_linear_cls(args, 'col')
         RowLinear = get_linear_cls(args, 'row')
 
-        self.w1 = ColLinear(args.dim, hidden_dim, bias=False)
-        self.w2 = ColLinear(hidden_dim, args.dim, bias=False)
-        self.w3 = RowLinear(args.dim, hidden_dim, bias=False)
+        # Llama 结构: w1(Gate), w3(Up), w2(Down)
+        self.w1 = ColLinear(args.dim, hidden_dim, bias=False)  # Gate
+        self.w3 = ColLinear(args.dim, hidden_dim, bias=False)  # Up
+        self.w2 = RowLinear(hidden_dim, args.dim, bias=False)  # Down
 
     def forward(self, x):
         # SwiGLU: (xW1 * SiLU(xW3)) * W2
@@ -86,6 +87,7 @@ class Attention(nn.Module):
         ColLinear = get_linear_cls(args, 'col')
         RowLinear = get_linear_cls(args, 'row')
 
+        # TP 模式下，这里的 dim 会被切分，所以传入 total dim 即可，Layer 内部会处理
         self.wq = ColLinear(args.dim, args.n_heads * self.head_dim, bias=False)
         self.wk = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wv = ColLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
@@ -97,12 +99,10 @@ class Attention(nn.Module):
         # 1. 投影
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
-        # 2. 拆分 Head 维度
-        # xq: [B, S, n_heads, D]
-        # xk, xv: [B, S, n_kv_heads, D]
-        xq = xq.view(B, S, self.n_heads, self.head_dim)
-        xk = xk.view(B, S, self.n_kv_heads, self.head_dim)
-        xv = xv.view(B, S, self.n_kv_heads, self.head_dim)
+        # 2. Reshape
+        xq = xq.view(B, S, -1, self.head_dim)
+        xk = xk.view(B, S, -1, self.head_dim)
+        xv = xv.view(B, S, -1, self.head_dim)
 
         # 3. Apply RoPE (旋转位置编码)
         # 注意：RoPE 是在 Attention 计算之前做的，且要在 repeat_kv 之前做
@@ -147,10 +147,18 @@ class LightronTransformer(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
-        self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
+
+        # Embedding 层并行化
+        if args.parallel_mode == 'manual_tp':
+            self.tok_embeddings = VocabParallelEmbedding(args.vocab_size, args.dim)
+            # Output 层通常也是 Column Parallel (Gather Output)
+            self.output = ColumnParallelLinear(args.dim, args.vocab_size, bias=False, gather_output=True)
+        else:
+            self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
+            self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
+
         self.layers = nn.ModuleList([TransformerBlock(args) for _ in range(args.n_layers)])
         self.norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
 
         # Precompute RoPE frequencies
         # 注意：这里只计算一次，并在 forward 中根据当前 seq_len 切片
@@ -160,7 +168,7 @@ class LightronTransformer(nn.Module):
         B, S = tokens.shape
         h = self.tok_embeddings(tokens)
 
-        # 确保 freqs_cis 在正确的设备上
+        # 确保 freqs_cis 在同一设备
         freqs_cis = self.freqs_cis[:S].to(h.device)
 
         for layer in self.layers:
