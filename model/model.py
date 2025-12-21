@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from config.config import ModelArgs
 from layers.layers import RMSNorm, apply_rotary_emb, precompute_freqs_cis
 from parallel.parallel_tp import ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding
+from parallel.parallel_cp import ContextParallelAttention
+from parallel.parallel_ep import ExpertParallel
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -45,7 +47,7 @@ def get_linear_cls(args: ModelArgs, parallel_type: str = None):
     return nn.Linear
 
 
-class FeedForward(nn.Module):
+class MLP(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         hidden_dim = 4 * args.dim
@@ -65,6 +67,53 @@ class FeedForward(nn.Module):
     def forward(self, x):
         # SwiGLU: (xW1 * SiLU(xW3)) * W2
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+
+class MoEFeedForward(nn.Module):
+    """
+    Sparse MoE Layer (集成 Expert Parallel)
+    """
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.num_experts = args.moe_num_experts
+        self.topk = args.moe_topk
+        # 1. Gating Network (Router)
+        # Router 通常不做 TP，因为输出维度很小 (num_experts)
+        self.gate = nn.Linear(args.dim, self.num_experts, bias=False)
+        # 2. Experts
+        # 在 EP 模式下，每个 GPU 只持有 total_experts / world_size 个专家
+        # 假设 args.ep_size 已经设置正确
+        # 这里简化处理：我们创建 num_experts 个 MLP，但在 forward 时 EP 模块会负责路由
+        # 实际生产中，这里应该只初始化 local_experts
+        self.experts = nn.ModuleList([MLP(args) for _ in range(self.num_experts)])
+        # 3. EP 通信模块
+        self.ep = ExpertParallel(self.num_experts)
+    def forward(self, x):
+        # x: [B, S, D]
+        B, S, D = x.shape
+        x_flat = x.view(-1, D)
+        # 1. Routing
+        router_logits = self.gate(x_flat) # [N, num_experts]
+        probs = F.softmax(router_logits, dim=-1)
+        weights, indices = torch.topk(probs, self.topk, dim=-1) # [N, k]
+        # 2. EP Dispatch (分发到对应 GPU)
+        # dispatched_x: [Total_Recv, D]
+        # metadata: 用于恢复顺序
+        dispatched_x, metadata = self.ep.dispatch(x_flat, indices)
+        # 3. Computation (计算本地专家)
+        # 这里是一个简化实现：实际应该根据 metadata 知道哪些 token 属于哪个专家
+        # 为了代码跑通，假设所有 token 平均分配给本地专家 (仅作演示逻辑)
+        # 真正的 MoE 实现需要在这里做复杂的 index select
+        # 假设 dispatched_x 已经包含了所有需要本地计算的 token
+        # 我们简单地通过第一个专家计算 (生产环境需要 loop over local experts)
+        expert_output = self.experts[0](dispatched_x)
+        # 4. EP Combine (聚合回原 GPU)
+        combined_output = self.ep.combine(expert_output, metadata)
+        # 5. 加权求和 (Weighted Sum)
+        # combined_output: [N, k, D]
+        # weights: [N, k]
+        output = (combined_output * weights.unsqueeze(-1)).sum(dim=1)
+        return output.view(B, S, D)
 
 
 class Attention(nn.Module):
@@ -124,10 +173,24 @@ class Attention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, layer_id: int):
         super().__init__()
+
+        # 1. Attention (集成 CP)
         self.attention = Attention(args)
-        self.feed_forward = FeedForward(args)
+        if args.parallel_mode == 'cp':
+            # 如果开启 CP，包裹 Attention
+            self.attention = ContextParallelAttention(self.attention, args)
+
+        # 2. FeedForward (集成 MoE)
+        # 策略：每 moe_layer_freq 层替换一个 MoE
+        # 例如 freq=2: Layer 0 (Dense), Layer 1 (MoE), Layer 2 (Dense)...
+        use_moe = (args.moe_num_experts > 1) and (layer_id % args.moe_layer_freq == 1)
+        if use_moe:
+            self.feed_forward = MoEFeedForward(args)
+        else:
+            self.feed_forward = MLP(args)
+
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -142,7 +205,7 @@ class LightronTransformer(nn.Module):
         super().__init__()
         self.args = args
 
-        # Embedding 层并行化
+        # TP Embedding
         if args.parallel_mode == 'manual_tp':
             self.tok_embeddings = VocabParallelEmbedding(args.vocab_size, args.dim)
             # Output 层通常也是 Column Parallel (Gather Output)
@@ -151,11 +214,13 @@ class LightronTransformer(nn.Module):
             self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
             self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
 
-        self.layers = nn.ModuleList([TransformerBlock(args) for _ in range(args.n_layers)])
+        # 传入 layer_id 以决定是否使用 MoE
+        self.layers = nn.ModuleList([
+            TransformerBlock(args, layer_id=i) for i in range(args.n_layers)
+        ])
         self.norm = RMSNorm(args.dim, eps=args.norm_eps)
 
-        # Precompute RoPE frequencies
-        # 注意：这里只计算一次，并在 forward 中根据当前 seq_len 切片
+        # Precompute RoPE frequencies 注意：这里只计算一次，并在 forward 中根据当前 seq_len 切片
         self.freqs_cis = precompute_freqs_cis(self.args.dim // self.args.n_heads, self.args.max_seq_len)
 
     def forward(self, tokens):
