@@ -119,9 +119,13 @@ class MoEFeedForward(nn.Module):
 class Attention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_heads = args.n_heads
+
+        self.tp_size = args.tp_size if hasattr(args, 'tp_size') else 1
+
         # 如果配置中没写 n_kv_heads，默认等于 n_heads (即退化为标准 MHA)
-        self.n_kv_heads = args.n_kv_heads if args.n_kv_heads is not None else args.n_heads
+        self.n_heads = args.n_heads // self.tp_size
+        self.n_kv_heads = (args.n_kv_heads if args.n_kv_heads is not None else args.n_heads) // self.tp_size
+
         self.head_dim = args.dim // args.n_heads
 
         # 计算复制倍数，例如 32 / 8 = 4
