@@ -5,6 +5,7 @@ import time
 import datetime
 
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.distributed as dist
@@ -166,6 +167,30 @@ def main():
     # 使用 Meta Device 初始化，秒级构建，不占显存
     with torch.device("meta"):
         base_model = LightronTransformer(model_args)
+    
+    # 定义一个强健的初始化函数, 防止初始权重为0，无法训练
+    def robust_init_weights(m):
+        # 1. 线性层和 Embedding：正态分布初始化
+        if isinstance(m, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(m.weight, mean=0.0, std=0.02)
+            if hasattr(m, 'bias') and m.bias is not None:
+                nn.init.zeros_(m.bias)
+        # 2. LayerNorm / RMSNorm：权重置为 1，偏置置为 0
+        # 通过类名判断，兼容你的 RMSNorm
+        elif "Norm" in m.__class__.__name__:
+            if hasattr(m, 'weight') and m.weight is not None:
+                nn.init.ones_(m.weight)
+            if hasattr(m, 'bias') and m.bias is not None:
+                nn.init.zeros_(m.bias)
+        # 3. 处理自定义的并行层 (如 ColumnParallelLinear, RowParallelLinear)
+        # 只要有 weight 属性且是叶子模块，就初始化
+        elif hasattr(m, 'weight') and m.weight is not None:
+            # 排除掉容器类 (如 ModuleList, Sequential)，只处理叶子节点
+            if len(list(m.children())) == 0:
+                # 默认按 Linear 处理
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if hasattr(m, 'bias') and m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     # 6. 应用并行策略
     # A. TP/CP/EP: 已经在 model.py 内部通过 parallel_mode 处理了层结构
@@ -183,25 +208,18 @@ def main():
         # 3. 初始化参数数值
         # 因为是 Meta 初始化，现在显存里全是垃圾数据，必须 reset
         # 为了保证所有 DP Rank 初始权重一致，我们需要固定随机种子
-        torch.manual_seed(42 + global_rank)  # 注意：通常 DP 需要相同种子，但 FSDP2 这种局部初始化比较特殊
-
-        # 更严谨的做法：设置相同的种子，让大家算出一样的随机数（如果切分逻辑允许）, 或者 Rank 0 初始化后广播（太慢）。
-        # 对于 FSDP2，最简单的做法是：设置全局统一种子，然后依靠 reset_parameters
         torch.manual_seed(train_cfg.get("seed", 42))
 
-        def init_weights(m):
-            # 如果模块有自定义的重置方法（如 Linear, Embedding, 或我们的 ParallelLinear）
-            if hasattr(m, 'reset_parameters'):
-                m.reset_parameters()
-            # 兜底逻辑：针对原生 PyTorch 层
-            elif isinstance(m, (torch.nn.Linear, torch.nn.Embedding)):
-                m.reset_parameters()
-
-        base_model.apply(init_weights)
+        print(f"[Rank {global_rank}] Applying robust init for FSDP...")
+        base_model.apply(robust_init_weights)
     else:
         # 纯 TP 模式或单卡模式，需要手动 materialize
+        print(f"[Rank {global_rank}] Materializing model to CUDA...")
         base_model = base_model.to_empty(device="cuda")
-        base_model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
+
+        print(f"[Rank {global_rank}] Applying robust manual initialization...")
+        # 强制应用初始化，不再依赖 reset_parameters 是否存在
+        base_model.apply(robust_init_weights)
 
     # recompute RoPE
     if global_rank == 0:
@@ -298,7 +316,13 @@ def main():
         # throughput统计：tokens_per_step 用 global batch（你的 dataloader.global_batch_size）更合理
         tokens_per_step = dataloader.global_batch_size * seq_len_global
         tokens_seen += tokens_per_step
-        if is_log_rank and step % train_cfg.get("log_interval", 10) == 0:
+
+        print_loss = False
+        if pp_size > 1 and global_rank == world_size / pp_size:
+            print_loss = True
+        if pp_size <= 1 and global_rank == 0:
+            print_loss = True
+        if print_loss and step % train_cfg.get("log_interval", 10) == 0:
             elapsed = time.time() - start_time
             tps = tokens_seen / elapsed
             print(f"Step {step}/{total_steps} | Loss: {loss:.4f} | TPS: {tps:.2f} tokens/s")
