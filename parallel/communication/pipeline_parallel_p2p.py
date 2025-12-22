@@ -2,7 +2,7 @@ import os
 import torch
 import torch.distributed as dist
 
-from .distributed import get_device_mesh
+from parallel.distributed import get_device_mesh
 
 _STEP = 0
 _VERBOSE = os.environ.get("VERBOSE", "0") == "1"

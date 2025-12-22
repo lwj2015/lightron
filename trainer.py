@@ -15,12 +15,12 @@ from model.model import LightronTransformer
 from parallel.distributed import setup_distributed, get_device_mesh
 from parallel.parallel_fsdp import apply_fsdp2
 
-from parallel.pipeline_parallel import (
+from parallel.parallel_pp import (
     PipelineParallel,
     train_step_pipeline_afab,
     train_step_pipeline_1f1b,
 )
-from parallel.pp_communications import get_pp_group_manager
+from parallel.communication.pipeline_parallel_p2p import get_pp_group_manager
 
 from data.dataloader import MicroBatchDataLoader
 

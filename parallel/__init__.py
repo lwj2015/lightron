@@ -5,7 +5,7 @@ from .parallel_fsdp import apply_fsdp1, apply_fsdp2
 from .parallel_tp import ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding
 from .parallel_cp import ContextParallelAttention
 from .parallel_ep import ExpertParallel
-from .parallel_pp import PipelineStage
+from .parallel_pp import PipelineParallel
 from .parallel_dp import DataParallel
 
 __all__ = [
@@ -14,6 +14,6 @@ __all__ = [
     "ColumnParallelLinear", "RowParallelLinear", "VocabParallelEmbedding",
     "ContextParallelAttention",
     "ExpertParallel",
-    "PipelineStage",
+    "PipelineParallel",
     "DataParallel"
 ]
