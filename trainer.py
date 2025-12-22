@@ -302,6 +302,16 @@ def main():
             print(f"Step {step}/{total_steps} | Loss: {loss:.4f} | TPS: {tps:.2f} tokens/s")
 
     if is_log_rank:
+        # save checkpoint
+        checkpoint = {
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'trained_steps': step,
+            'trained_tokens': tokens_seen
+        }
+        torch.save(checkpoint, f'./ckpt_step_{step}_tpsize_{tp_size}_dpsize_{dp_size}')
+
+    if is_log_rank == 0:
         print("Training Finished!")
 
     dist.destroy_process_group()
