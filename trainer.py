@@ -2,6 +2,8 @@ import os
 import json
 import argparse
 import time
+import datetime
+
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -10,9 +12,19 @@ from transformers import AutoConfig
 
 from config.config import ModelArgs
 from model.model import LightronTransformer
-from parallel.distributed import setup_distributed
+from parallel.distributed import setup_distributed, get_device_mesh
 from parallel.parallel_fsdp import apply_fsdp2
+
+from parallel.pipeline_parallel import (
+    PipelineParallel,
+    train_step_pipeline_afab,
+    train_step_pipeline_1f1b,
+)
+from parallel.pp_communications import get_pp_group_manager
+
 from data.dataloader import MicroBatchDataLoader
+
+from layers.layers import precompute_freqs_cis
 
 
 def get_args():
@@ -26,28 +38,36 @@ def load_config(config_path):
         return json.load(f)
 
 
-def train_step(model, batch, grad_acc_steps):
-    """单步训练逻辑"""
-    # 数据移动到 GPU
-    input_ids = batch["input_ids"].cuda()
-    target_ids = batch["target_ids"].cuda()
+def get_group_rank(group):
+    if group is None:
+        return 0
+    return dist.get_rank(group=group)
 
-    # Forward
-    # 注意：LightronTransformer 返回的是 [B, S, VocabSize]
-    logits = model(input_ids)
 
-    # Loss Calculation
-    # Reshape: [B*S, V] vs [B*S]
-    loss = F.cross_entropy(
-        logits.view(-1, logits.size(-1)),
-        target_ids.view(-1)
-    )
-
-    # Scale loss for gradient accumulation
+def train_step_single(model, batch, grad_acc_steps, device):
+    input_ids = batch["input_ids"].to(device)
+    target_ids = batch["target_ids"].to(device)
+    logits = model(input_ids)  # [B, S, V]
+    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_ids.view(-1), reduction="mean")
     loss = loss / grad_acc_steps
     loss.backward()
+    return loss.item()
 
-    return loss.item() * grad_acc_steps
+
+class InfiniteDataIterator:
+    """
+    让 MicroBatchDataLoader next(data_loader) 永不 StopIteration 并暴露 grad_acc_steps。
+    """
+    def __init__(self, dataloader, grad_acc_steps):
+        self.dataloader = dataloader
+        self.grad_acc_steps = grad_acc_steps
+        self._it = iter(dataloader)
+    def __next__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            self._it = iter(self.dataloader)
+            return next(self._it)
 
 
 def main():
@@ -68,6 +88,20 @@ def main():
     pp_size = int(os.environ.get("PP_SIZE", dist_cfg.get("pp_size", 1)))
     ep_size = int(os.environ.get("EP_SIZE", dist_cfg.get("ep_size", 1)))
 
+    local_rank = int(os.environ["LOCAL_RANK"])
+    global_rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+
+    dist.init_process_group(
+        backend='nccl',
+        init_method="env://",
+        rank=global_rank,
+        world_size=world_size,
+        timeout=datetime.timedelta(minutes=10),
+    )
+
     setup_distributed(
         tp_size=tp_size,
         pp_size=pp_size,
@@ -76,14 +110,15 @@ def main():
         dp_size=dp_size
     )
 
-    local_rank = int(os.environ["LOCAL_RANK"])
-    global_rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    torch.cuda.set_device(local_rank)
+    mesh = get_device_mesh()
 
     if global_rank == 0:
         print(f"🚀 Starting training with config: {args.config}")
         print(f"   World Size: {world_size} | TP={tp_size} DP={dp_size}")
+    
+    # PP + FSDP2 暂时先别混（后续可以做 dp_mesh slice + require_backward_grad_sync）
+    if pp_size > 1:
+        assert dp_size == 1, "当前这版 Picotron-style PP trainer 先要求 dp_size==1（暂不与 FSDP2 混用）"
 
     # 3. 自动加载模型配置 (从 HF)
     # 使用 HF_ENDPOINT 环境变量确保国内能下载
@@ -128,7 +163,7 @@ def main():
     # 5. 初始化模型
     # 使用 Meta Device 初始化，秒级构建，不占显存
     with torch.device("meta"):
-        model = LightronTransformer(model_args)
+        base_model = LightronTransformer(model_args)
 
     # 6. 应用并行策略
     # A. TP/CP/EP: 已经在 model.py 内部通过 parallel_mode 处理了层结构
@@ -138,10 +173,10 @@ def main():
         # 注意：如果 TP>1，这里是混合并行，FSDP2 会在 DP 维度切分
 
         # 1. 先切分 (此时还是 Meta Tensor)
-        model = apply_fsdp2(model)
+        base_model = apply_fsdp2(base_model)
 
         # 2. 分配物理显存 (Materialize), 这会在每张卡上只分配它负责的那一部分参数 (Local Shard)
-        model = model.to_empty(device="cuda")
+        base_model = base_model.to_empty(device="cuda")
 
         # 3. 初始化参数数值
         # 因为是 Meta 初始化，现在显存里全是垃圾数据，必须 reset
@@ -160,13 +195,13 @@ def main():
             elif isinstance(m, (torch.nn.Linear, torch.nn.Embedding)):
                 m.reset_parameters()
 
-        model.apply(init_weights)
+        base_model.apply(init_weights)
     else:
         # 纯 TP 模式或单卡模式，需要手动 materialize
-        model = model.to_empty(device="cuda")
-        model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
+        base_model = base_model.to_empty(device="cuda")
+        base_model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
 
-    from layers.layers import precompute_freqs_cis
+    # recompute RoPE
     if global_rank == 0:
         print("Re-computing RoPE frequencies for Meta-initialized model...")
     with torch.no_grad():
@@ -176,15 +211,24 @@ def main():
             model_args.max_seq_len
         )
         # 移动到 GPU 并赋值给模型的 buffer
-        model.freqs_cis.copy_(real_freqs.to("cuda"))
+        base_model.freqs_cis.copy_(real_freqs.to("cuda"))
 
     if global_rank == 0:
         # 统计参数量 (FSDP 下可能不准，仅供参考)
         try:
-            param_count = sum(p.numel() for p in model.parameters())
+            param_count = sum(p.numel() for p in base_model.parameters())
             print(f"Model initialized. Total Parameters (Local/Meta): {param_count / 1e9:.2f}B")
         except:
             pass
+    
+    # wrap PP (Picotron-style)
+    if pp_size > 1:
+        model = PipelineParallel(base_model, model_args)
+    else:
+        model = base_model
+
+    model = model.to(torch.bfloat16)
+    model.train()
 
     # 7. 初始化 DataLoader
     # 使用我们刚刚测试通过的 MicroBatchDataLoader
@@ -198,6 +242,7 @@ def main():
         max_samples=train_cfg.get("max_samples", None),
         split=data_cfg.get("split", "train")
     )
+    data_iter = InfiniteDataIterator(dataloader, train_cfg["gradient_accumulation_steps"])
 
     # 8. 优化器
     optimizer = optim.AdamW(
@@ -206,52 +251,57 @@ def main():
         weight_decay=train_cfg.get("weight_decay", 0.01)
     )
 
-    # 9. 训练循环
-    model.train()
+    # tensor_shapes for PP comm (activation/grad between stages)
+    # 注意：PP 之间传的是 hidden states: [B_micro, S_local(cp), H]
+    seq_len_global = train_cfg["seq_length"]
+    assert seq_len_global % cp_size == 0, "seq_length must be divisible by cp_size"
+
+    seq_len_per_gpu = dataloader.seq_length_per_gpu
+    tensor_shapes = (train_cfg["micro_batch_size"], seq_len_per_gpu, model_args.dim)
+
+    ppm = get_pp_group_manager()
+    is_log_rank = (global_rank == 0)  # 你也可以改成：tp_rank==0 && cp_rank==0 && pp_last 等
     total_steps = train_cfg["total_steps"]
-    step = 0
-    tokens_seen = 0
-
     start_time = time.time()
-
-    # 创建迭代器
-    data_iter = iter(dataloader)
-
-    if global_rank == 0:
+    tokens_seen = 0
+    if is_log_rank:
         print("\n=== Start Training ===")
 
-    while step < total_steps:
-        optimizer.zero_grad()
-        loss_accum = 0.0
+    # 9. 训练循环
+    # model.train()
 
-        # Gradient Accumulation Loop
-        for _ in range(train_cfg["gradient_accumulation_steps"]):
-            try:
+    for step in range(1, total_steps + 1):
+        optimizer.zero_grad(set_to_none=True)
+        if pp_size > 1:
+            engine = dist_cfg.get("pp_engine", "1f1b").lower()
+            # 让 pipeline 里的每个 microbatch 都能拿到 batch
+            # 注意：各 rank 都 next(data_iter) 以保持数据流一致（模仿 picotron）
+            if engine == "afab":
+                loss = train_step_pipeline_afab(model, data_iter, tensor_shapes, device, torch.bfloat16)
+            elif engine == "1f1b":
+                loss = train_step_pipeline_1f1b(model, data_iter, tensor_shapes, device, torch.bfloat16)
+            else:
+                raise ValueError(f"Invalid pp_engine: {engine}")
+            # 非 last stage 的 loss 通常是 0.0（你的 pipeline_parallel 里就是这么做的）
+        else:
+            # non-PP path: normal grad accumulation
+            loss = 0.0
+            for i in range(train_cfg["gradient_accumulation_steps"]):
                 batch = next(data_iter)
-            except StopIteration:
-                # Epoch 结束，重新开始
-                data_iter = iter(dataloader)
-                batch = next(data_iter)
-
-            loss_val = train_step(model, batch, train_cfg["gradient_accumulation_steps"])
-            loss_accum += loss_val
-
-        # Optimizer Step
-        # FSDP 会自动处理梯度同步
+                # batch, _ = maybe_slice_for_cp(batch, cp_size, mesh)
+                assert batch["input_ids"].shape[1] == dataloader.seq_length_per_gpu, \
+                    f"expected S_local={dataloader.seq_length_per_gpu}, got {batch['input_ids'].shape[1]}"
+                loss += train_step_single(model, batch, train_cfg["gradient_accumulation_steps"], device)
         optimizer.step()
-
-        step += 1
-        # 计算吞吐量
-        current_tokens = dataloader.global_batch_size * train_cfg["seq_length"]
-        tokens_seen += current_tokens
-
-        # Logging
-        if global_rank == 0 and step % train_cfg.get("log_interval", 10) == 0:
+        # throughput统计：tokens_per_step 用 global batch（你的 dataloader.global_batch_size）更合理
+        tokens_per_step = dataloader.global_batch_size * seq_len_global
+        tokens_seen += tokens_per_step
+        if is_log_rank and step % train_cfg.get("log_interval", 10) == 0:
             elapsed = time.time() - start_time
-            tokens_per_sec = tokens_seen / elapsed
-            print(f"Step {step}/{total_steps} | Loss: {loss_accum:.4f} | TPS: {tokens_per_sec:.2f} tokens/s")
+            tps = tokens_seen / elapsed
+            print(f"Step {step}/{total_steps} | Loss: {loss:.4f} | TPS: {tps:.2f} tokens/s")
 
-    if global_rank == 0:
+    if is_log_rank:
         print("Training Finished!")
 
     dist.destroy_process_group()

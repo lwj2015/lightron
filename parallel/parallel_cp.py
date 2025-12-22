@@ -25,7 +25,11 @@ def _all_to_all(input_, scatter_dim, gather_dim, group):
     # 3. 准备输入切片 (Split)
     # input shape: [..., scatter_dim_size, ...]
     # chunks shape: world_size * [..., scatter_dim_size/P, ...]
-    input_chunks = list(input_.chunk(world_size, dim=scatter_dim))
+    # input_chunks = list(input_.chunk(world_size, dim=scatter_dim))
+    dim = input_.size(scatter_dim)
+    assert dim % world_size == 0, f"all_to_all requires dim({dim}) % world_size({world_size})==0 on scatter_dim={scatter_dim}"
+    chunk = dim // world_size
+    input_chunks = list(input_.split(chunk, dim=scatter_dim))
 
     # 4. 准备输出缓冲区
     # 输出形状与输入切片形状相同（假设切分均匀）
@@ -104,6 +108,11 @@ class ContextParallelAttention(nn.Module):
         B, S_local, Hidden = x.shape
         cp_size = dist.get_world_size(group=self.cp_group)
 
+        S_global = S_local * cp_size
+        assert freqs_cis.shape[0] >= S_global, \
+            f"freqs_cis too short: {freqs_cis.shape[0]} < S_global {S_global}"
+
+
         # 此时 x 是 [B, S/P, H_total * D]
         # 我们需要先把它 reshape 成 [B, S/P, H_total, D]
         # 注意：这里假设 local_attn 内部的 wq, wk, wv 是线性的，
@@ -134,10 +143,14 @@ class ContextParallelAttention(nn.Module):
         # === 2. 第一次 All-to-All (Seq -> Head) ===
         # 目标: [B, S_global, H_local, D]
         # 操作: Scatter dim 1 (Seq), Gather dim 2 (Head)
+        
+        # print(f"[CP] before a2a: xq={tuple(xq.shape)} S_local={S_local} heads={self.num_heads} head_dim={self.head_dim}")
 
         xq = _all_to_all(xq, scatter_dim=2, gather_dim=1, group=self.cp_group)
         xk = _all_to_all(xk, scatter_dim=2, gather_dim=1, group=self.cp_group)
         xv = _all_to_all(xv, scatter_dim=2, gather_dim=1, group=self.cp_group)
+
+        # print(f"[CP] after a2a: xq={tuple(xq.shape)} (expect S_global={S_local*cp_size}) freqs={tuple(freqs_cis.shape)}")
 
         # 现在的形状: [B, S_global, H_total/P, D]
         # 此时我们拥有了完整的 Sequence，但只有部分的 Heads。

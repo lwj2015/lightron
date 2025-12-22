@@ -75,6 +75,14 @@ class MicroBatchDataLoader(DataLoader):
             seed=seed
         )
 
+        if dist.get_rank() == 0:
+          print(
+              f"[DataLoader] dp_world_size={self.dp_world_size} cp_world_size={self.cp_world_size} "
+              f"seq_length={self.seq_length} seq_length_per_gpu={self.seq_length_per_gpu} "
+              f"micro_batch_size={self.micro_batch_size} grad_acc_steps={self.grad_acc_steps}",
+              flush=True
+          )
+
         super().__init__(
             self.tokenized_dataset,
             batch_size=micro_batch_size,
@@ -137,6 +145,10 @@ class MicroBatchDataLoader(DataLoader):
         input_ids_list = [item['input_ids'] for item in batch]
         batch_tensor = torch.tensor(input_ids_list, dtype=torch.long)
 
+        # 强校验：必须是 S+1
+        assert batch_tensor.shape[1] == self.seq_length + 1, \
+        f"Expected S+1={self.seq_length+1}, got {batch_tensor.shape[1]}"
+
         # batch_tensor: [B, S+1]
         # input: 0 ~ S-1
         # target: 1 ~ S
@@ -147,13 +159,21 @@ class MicroBatchDataLoader(DataLoader):
         start_idx = self.cp_rank * self.seq_length_per_gpu
         end_idx = start_idx + self.seq_length_per_gpu
 
+        # 强校验：边界必须合法
+        assert end_idx <= self.seq_length, \
+        f"CP slice out of range: end_idx={end_idx}, seq_length={self.seq_length}"
+
         # 注意：这里切分的是 input (0~S-1) 和 target (1~S)
         # 原始数据长度是 S+1
-
         # Input: [B, S_local]
         input_ids = batch_tensor[:, start_idx: end_idx].contiguous()
         # Target: [B, S_local]
         target_ids = batch_tensor[:, start_idx + 1: end_idx + 1].contiguous()
+
+        # 强校验：输出必须是 S_local
+        assert input_ids.shape[1] == self.seq_length_per_gpu, \
+          f"Expected S_local={self.seq_length_per_gpu}, got {input_ids.shape[1]}"
+        assert target_ids.shape == input_ids.shape
 
         return {
             "input_ids": input_ids,
