@@ -5,43 +5,100 @@ from .distributed import get_device_mesh
 from layers.layers import apply_rotary_emb
 
 
+# def _all_to_all(input_, scatter_dim, gather_dim, group):
+#     """
+#     All-to-All 通信原语 (基于 Ulysses 算法的核心)
+#     作用：将张量在 scatter_dim 上切分，发送给不同 rank，
+#           同时接收其他 rank 的数据，在 gather_dim 上拼接。
+#     """
+#     # 1. 基础检查
+#     if group is None:
+#         return input_
+
+#     world_size = dist.get_world_size(group=group)
+#     if world_size == 1:
+#         return input_
+
+#     # 2. 预处理：确保输入连续
+#     input_ = input_.contiguous()
+
+#     # 3. 准备输入切片 (Split)
+#     # input shape: [..., scatter_dim_size, ...]
+#     # chunks shape: world_size * [..., scatter_dim_size/P, ...]
+#     # input_chunks = list(input_.chunk(world_size, dim=scatter_dim))
+#     dim = input_.size(scatter_dim)
+#     assert dim % world_size == 0, f"all_to_all requires dim({dim}) % world_size({world_size})==0 on scatter_dim={scatter_dim}"
+#     chunk = dim // world_size
+#     input_chunks = list(input_.split(chunk, dim=scatter_dim))
+
+#     # 4. 准备输出缓冲区
+#     # 输出形状与输入切片形状相同（假设切分均匀）
+#     output_chunks = [torch.empty_like(chunk) for chunk in input_chunks]
+
+#     # 5. 执行 All-to-All 通信
+#     # 这是一个同步操作
+#     dist.all_to_all(output_chunks, input_chunks, group=group)
+
+#     # 6. 后处理：拼接 (Concat)
+#     # output shape: [..., gather_dim_size * P, ...]
+#     return torch.cat(output_chunks, dim=gather_dim)
+
+
+class SeqAllToAll(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input_tensor, scatter_dim, gather_dim, group):
+        ctx.scatter_dim = scatter_dim
+        ctx.gather_dim = gather_dim
+        ctx.group = group
+        # 1. 基础检查
+        world_size = dist.get_world_size(group)
+        if world_size == 1:
+            return input_tensor
+        # 2. 确保输入连续
+        input_tensor = input_tensor.contiguous()
+        # 3. Split (Scatter)
+        # 使用 split 而不是 chunk，确保维度整除
+        dim_size = input_tensor.size(scatter_dim)
+        assert dim_size % world_size == 0, \
+            f"Input dim {scatter_dim} size {dim_size} not divisible by CP size {world_size}"
+        split_size = dim_size // world_size
+        input_chunks = list(torch.split(input_tensor, split_size, dim=scatter_dim))
+        # 4. 准备输出
+        # 输出的形状：除了 scatter/gather 维度外，其他维度不变
+        # gather 维度会变大 world_size 倍
+        output_chunks = [torch.empty_like(chunk) for chunk in input_chunks]
+        # 5. 通信
+        dist.all_to_all(output_chunks, input_chunks, group=group)
+        # 6. Concat (Gather)
+        return torch.cat(output_chunks, dim=gather_dim)
+    @staticmethod
+    def backward(ctx, grad_output):
+        # 反向传播逻辑：
+        # 正向是：Scatter(dim1) -> AllToAll -> Gather(dim2)
+        # 反向就是：Scatter(dim2) -> AllToAll -> Gather(dim1)
+        if ctx.group is None:
+            return grad_output, None, None, None
+        world_size = dist.get_world_size(ctx.group)
+        if world_size == 1:
+            return grad_output, None, None, None
+        grad_output = grad_output.contiguous()
+        # 1. Split on gather_dim (正向的输出维度)
+        dim_size = grad_output.size(ctx.gather_dim)
+        split_size = dim_size // world_size
+        input_list = list(torch.split(grad_output, split_size, dim=ctx.gather_dim))
+        output_list = [torch.empty_like(x) for x in input_list]
+        # 2. All-to-All (通信是对称的)
+        dist.all_to_all(output_list, input_list, group=ctx.group)
+        # 3. Concat on scatter_dim (正向的输入维度)
+        grad_input = torch.cat(output_list, dim=ctx.scatter_dim)
+        # 返回值对应 forward 的参数：input, scatter_dim, gather_dim, group
+        # 后三个参数不需要梯度，返回 None
+        return grad_input, None, None, None
 def _all_to_all(input_, scatter_dim, gather_dim, group):
     """
-    All-to-All 通信原语 (基于 Ulysses 算法的核心)
-    作用：将张量在 scatter_dim 上切分，发送给不同 rank，
-          同时接收其他 rank 的数据，在 gather_dim 上拼接。
+    封装后的 All-to-All 调用，支持 Autograd
     """
-    # 1. 基础检查
-    if group is None:
-        return input_
-
-    world_size = dist.get_world_size(group=group)
-    if world_size == 1:
-        return input_
-
-    # 2. 预处理：确保输入连续
-    input_ = input_.contiguous()
-
-    # 3. 准备输入切片 (Split)
-    # input shape: [..., scatter_dim_size, ...]
-    # chunks shape: world_size * [..., scatter_dim_size/P, ...]
-    # input_chunks = list(input_.chunk(world_size, dim=scatter_dim))
-    dim = input_.size(scatter_dim)
-    assert dim % world_size == 0, f"all_to_all requires dim({dim}) % world_size({world_size})==0 on scatter_dim={scatter_dim}"
-    chunk = dim // world_size
-    input_chunks = list(input_.split(chunk, dim=scatter_dim))
-
-    # 4. 准备输出缓冲区
-    # 输出形状与输入切片形状相同（假设切分均匀）
-    output_chunks = [torch.empty_like(chunk) for chunk in input_chunks]
-
-    # 5. 执行 All-to-All 通信
-    # 这是一个同步操作
-    dist.all_to_all(output_chunks, input_chunks, group=group)
-
-    # 6. 后处理：拼接 (Concat)
-    # output shape: [..., gather_dim_size * P, ...]
-    return torch.cat(output_chunks, dim=gather_dim)
+    return SeqAllToAll.apply(input_, scatter_dim, gather_dim, group)
 
 
 class ContextParallelAttention(nn.Module):

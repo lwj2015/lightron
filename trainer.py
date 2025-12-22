@@ -20,7 +20,7 @@ from parallel.parallel_pp import (
     train_step_pipeline_afab,
     train_step_pipeline_1f1b,
 )
-from parallel.communication.pipeline_parallel_p2p import get_pp_group_manager
+from parallel.communication.pipeline_parallel_p2p import get_pp_group_manager, init_pp_group_manager
 
 from data.dataloader import MicroBatchDataLoader
 
@@ -109,6 +109,8 @@ def main():
         ep_size=ep_size,
         dp_size=dp_size
     )
+
+    init_pp_group_manager()
 
     mesh = get_device_mesh()
 

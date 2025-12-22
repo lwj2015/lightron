@@ -8,6 +8,8 @@ from parallel.communication.pipeline_parallel_p2p import (
     get_pp_group_manager,
 )
 
+import torch.distributed as dist
+
 
 class PipelineParallel(nn.Module):
     """
@@ -110,6 +112,19 @@ class PipelineParallel(nn.Module):
             output_tensor_grad = torch.ones_like(output_tensor, memory_format=torch.preserve_format)
 
         torch.autograd.backward(output_tensor, grad_tensors=output_tensor_grad, retain_graph=False, create_graph=False)
+
+        """
+        print(f"global_rank={dist.get_rank()} pp_rank={self.ppm.pp_rank}")
+        if (not self.ppm.pp_is_first_stage) and (input_tensor is not None):
+            if not hasattr(self, "_printed_grad"):
+                self._printed_grad = True
+                g = input_tensor.grad
+                gn = None if g is None else float(g.norm().detach().cpu())
+                print(f"[PP][grad_check] pp_rank={self.ppm.pp_rank} input_grad_norm={gn}", flush=True)
+        else:
+            print(f"self.ppm.pp_rank: {self.ppm.pp_rank}, self.ppm.pp_is_first_stage: {self.ppm.pp_is_first_stage}, input_tensor: {input_tensor}")
+        """
+
         return input_tensor.grad if input_tensor is not None else None
 
 
@@ -208,11 +223,18 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader, tensor_shapes
         output_tensors.append(out)
 
     # --- Steady state: 1F1B ---
+    # print(f"debug, num_remaining: {num_remaining}")
     if num_remaining > 0:
         input_tensor = pipeline_communicate("recv_forward", shapes=tensor_shapes, device=device, dtype=dtype)
+        # print(f"debug, input_tensor: {input_tensor}, input_tensor.requires_grad: {input_tensor.requires_grad}")
+        if input_tensor is not None and input_tensor.requires_grad is False:
+            print(f"[FATAL] Rank {dist.get_rank()} received input_tensor but requires_grad is False! Graph will break!", flush=True)
+            input_tensor.requires_grad_(True) # 尝试强制修复
 
     if requires_grad_sync:
         model.require_backward_grad_sync = False
+    
+    # print(f"[Debug None Tensor {dist.get_global_rank(ppm.pp_group, ppm.pp_rank)}] PP Group: {ppm.pp_rank}/{ppm.pp_world_size}")
 
     for i in range(num_remaining):
         is_last_iter = (i == num_remaining - 1)
@@ -261,6 +283,11 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader, tensor_shapes
 
         out_grad = pipeline_communicate("recv_backward", shapes=tensor_shapes, device=device, dtype=dtype)
         in_grad = model.backward(input_tensor, output_tensor, out_grad)
+        # print(f"model.ppm.pp_is_first_stage: {model.ppm.pp_is_first_stage}, in_grad: {in_grad}")
+        if not model.ppm.pp_is_first_stage and in_grad is None:
+            print(f"[FATAL] Rank {dist.get_rank()} (Stage {model.ppm.pp_rank}) backward produced None grad! "
+                f"Input tensor requires_grad: {input_tensor.requires_grad if input_tensor is not None else 'None'}. "
+                f"Output tensor grad fn: {output_tensor.grad_fn if output_tensor is not None else 'None'}", flush=True)
         pipeline_communicate("send_backward", tensor=in_grad, device=device, dtype=dtype)
 
     return logging_loss
